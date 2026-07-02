@@ -4,8 +4,19 @@
 //   LINE_CHANNEL_ACCESS_TOKEN = channel access token ของ LINE OA ที่สร้างแยกสำหรับระบบใบลา
 //   LINE_ADMIN_USER_IDS       = user id ของแอดมิน 3 คน คั่นด้วย comma เช่น "U111...,U222...,U333..."
 
-export async function onRequestPost(context) {
+export async function onRequest(context) {
   const { request, env } = context;
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204 });
+  }
+
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ error: "method not allowed, use POST" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
 
   let body;
   try {
