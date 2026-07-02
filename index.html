@@ -6,6 +6,10 @@
 <title>ระบบใบลา</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
     --bg:#0f1216;
@@ -356,6 +360,8 @@ function renderDocuments(){
       </div>
       <div class="preview-grid" id="preview-grid"></div>
       <button class="btn" onclick="uploadDocuments()">อัปโหลดเอกสาร</button>
+      <label style="margin-top:18px;">เอกสารที่อัปโหลดแล้วสำหรับคำร้องนี้</label>
+      <div class="thumbs" id="existing-docs"></div>
     </div>
   `;
 }
@@ -397,6 +403,18 @@ function selectRequest(id, el){
   document.getElementById('upload-section').style.display='block';
   pendingFiles = [];
   document.getElementById('preview-grid').innerHTML='';
+  loadExistingDocs(id);
+}
+
+async function loadExistingDocs(requestId){
+  const box = document.getElementById('existing-docs');
+  box.innerHTML = `<span style="font-size:12.5px;color:var(--text-dim);">กำลังโหลด...</span>`;
+  const { data, error } = await sb.from('leave_documents')
+    .select('*').eq('leave_request_id', requestId)
+    .order('uploaded_at', {ascending:false});
+  if(error){ box.innerHTML = `<span style="font-size:12.5px;color:var(--danger);">โหลดเอกสารไม่สำเร็จ: ${error.message}</span>`; return; }
+  if(!data || data.length===0){ box.innerHTML = `<span style="font-size:12.5px;color:var(--text-dim);">ยังไม่มีเอกสารแนบ</span>`; return; }
+  box.innerHTML = data.map(d=>`<img src="${d.file_url}" onclick="viewImage('${d.file_url}')">`).join('');
 }
 
 function handleFiles(event){
@@ -420,20 +438,36 @@ async function uploadDocuments(){
   const last=document.getElementById('d_last').value.trim();
 
   toast('กำลังอัปโหลด...');
+  let successCount = 0;
+  let lastError = null;
   for(const file of pendingFiles){
-    const path = `${selectedRequestId}/${Date.now()}_${file.name}`;
-    const { error: upErr } = await sb.storage.from(STORAGE_BUCKET).upload(path, file);
-    if(upErr){ toast('อัปโหลดล้มเหลว: '+upErr.message); continue; }
+    const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g,'_');
+    const path = `${selectedRequestId}/${Date.now()}_${safeName}`;
+    const { error: upErr } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
+      cacheControl: '3600', upsert: false, contentType: file.type
+    });
+    if(upErr){ lastError = upErr; console.error('upload error', upErr); continue; }
     const { data: urlData } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-    await sb.from('leave_documents').insert({
+    const { error: insErr } = await sb.from('leave_documents').insert({
       leave_request_id: selectedRequestId,
       first_name:first, last_name:last,
       file_path: path, file_url: urlData.publicUrl
     });
+    if(insErr){ lastError = insErr; console.error('insert error', insErr); continue; }
+    successCount++;
   }
-  toast('อัปโหลดเอกสารเรียบร้อย');
+
+  if(successCount === pendingFiles.length){
+    toast(`อัปโหลดเอกสารเรียบร้อย (${successCount} ไฟล์)`);
+  } else if(successCount > 0){
+    toast(`อัปโหลดสำเร็จ ${successCount}/${pendingFiles.length} ไฟล์ — ${lastError ? lastError.message : ''}`);
+  } else {
+    toast(`อัปโหลดไม่สำเร็จ: ${lastError ? lastError.message : 'ไม่ทราบสาเหตุ'} (เช็คว่าสร้าง bucket "${STORAGE_BUCKET}" เป็น Public แล้วหรือยัง)`);
+  }
+
   pendingFiles = [];
   document.getElementById('preview-grid').innerHTML='';
+  loadExistingDocs(selectedRequestId);
 }
 
 function statusClass(status){
@@ -600,8 +634,38 @@ async function notifyAdmins(message){
   }catch(e){ console.warn('notify failed', e); }
 }
 
-// ==================== Export PDF รายเดือน ====================
-function exportPDF(){
+function buildReportHTML(filtered, month, person){
+  const title = `รายงานการลา ${month ? '— เดือน '+month : '— ทุกเดือน'} ${person ? '— '+person : '— พนักงานทั้งหมด'}`;
+  const rows = filtered.map((r,i)=>`
+    <tr style="${i%2===1?'background:#f7f8fa;':''}">
+      <td style="padding:8px;border:1px solid #ccc;">${r.first_name} ${r.last_name}</td>
+      <td style="padding:8px;border:1px solid #ccc;">${r.leave_type}</td>
+      <td style="padding:8px;border:1px solid #ccc;">${fmtDate(r.start_date)} ${r.start_time.slice(0,5)}</td>
+      <td style="padding:8px;border:1px solid #ccc;">${fmtDate(r.end_date)} ${r.end_time.slice(0,5)}</td>
+      <td style="padding:8px;border:1px solid #ccc;">${r.total_days} วัน ${r.total_hours} ชม. ${r.total_minutes} นาที</td>
+      <td style="padding:8px;border:1px solid #ccc;">${r.status}</td>
+    </tr>`).join('');
+  return `
+    <div style="font-family:'Noto Sans Thai',sans-serif;color:#111;">
+      <h2 style="margin:0 0 4px;font-size:20px;">${title}</h2>
+      <div style="font-size:12px;color:#555;margin-bottom:16px;">ออกรายงานเมื่อ ${new Date().toLocaleDateString('th-TH')}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#eef1f4;">
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">ชื่อ-สกุล</th>
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">ประเภท</th>
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">เริ่ม</th>
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">สิ้นสุด</th>
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">รวม</th>
+            <th style="text-align:left;padding:8px;border:1px solid #ccc;">สถานะ</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+async function exportPDF(){
   const month = document.getElementById('month-select').value;
   const person = document.getElementById('person-select').value;
   let filtered = allRequestsCache;
@@ -609,27 +673,44 @@ function exportPDF(){
   if(person) filtered = filtered.filter(r=>`${r.first_name} ${r.last_name}`===person);
 
   if(filtered.length===0){ toast('ไม่มีข้อมูลสำหรับส่งออก'); return; }
+  toast('กำลังสร้าง PDF...');
 
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  doc.setFontSize(14);
-  doc.text(`Leave Report ${month||'All'} ${person||'All staff'}`, 14, 16);
-  doc.setFontSize(9);
-  let y = 28;
-  doc.text('Name', 14, y); doc.text('Type', 70, y); doc.text('Start', 100, y);
-  doc.text('End', 135, y); doc.text('Total', 170, y); doc.text('Status', 190, y);
-  y+=6;
-  filtered.forEach(r=>{
-    if(y>280){ doc.addPage(); y=20; }
-    doc.text(`${r.first_name} ${r.last_name}`, 14, y);
-    doc.text(r.leave_type, 70, y);
-    doc.text(`${r.start_date} ${r.start_time}`, 100, y);
-    doc.text(`${r.end_date} ${r.end_time}`, 135, y);
-    doc.text(`${r.total_days}d ${r.total_hours}h`, 170, y);
-    doc.text(r.status, 190, y);
-    y+=7;
-  });
-  doc.save(`leave-report-${month||'all'}-${person||'all'}.pdf`);
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:820px;background:#ffffff;padding:24px;';
+  container.innerHTML = buildReportHTML(filtered, month, person);
+  document.body.appendChild(container);
+
+  try{
+    if(document.fonts && document.fonts.ready){
+      await document.fonts.load('16px "Noto Sans Thai"');
+      await document.fonts.ready;
+    }
+    const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+    document.body.removeChild(container);
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p','pt','a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = canvas.height * imgWidth / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+
+    let heightLeft = imgHeight;
+    let position = 0;
+    pdf.addImage(imgData,'PNG',0,position,imgWidth,imgHeight);
+    heightLeft -= pageHeight;
+    while(heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData,'PNG',0,position,imgWidth,imgHeight);
+      heightLeft -= pageHeight;
+    }
+    pdf.save(`leave-report-${month||'all'}-${person||'all'}.pdf`);
+  }catch(e){
+    document.body.removeChild(container);
+    toast('สร้าง PDF ไม่สำเร็จ: '+e.message);
+  }
 }
 
 // ==================== INIT ====================
