@@ -125,6 +125,7 @@
 const SUPABASE_URL = "https://gvjhwgzbtrkpooetgyom.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd2amh3Z3pidHJrcG9vZXRneW9tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NzYwNTIsImV4cCI6MjA5ODU1MjA1Mn0.HcrIxVEriTMHFNBdKanxV3WkMRem1JL2hQeByGAfNhw";
 const NOTIFY_ENDPOINT = "/notify"; // Cloudflare Pages Function
+const APP_URL = "https://leave-di3.pages.dev/"; // ลิงก์หลักของเว็บแอป (แก้เป็นโดเมนจริงถ้ามี custom domain ทีหลัง)
 const ADMIN_PIN = "1168";
 const STORAGE_BUCKET = "leave-docs";
 // =========================================================================
@@ -329,7 +330,7 @@ async function submitRequest(){
   if(error){ toast('ส่งคำร้องไม่สำเร็จ: '+error.message); return; }
 
   toast('ส่งคำร้องเรียบร้อย');
-  notifyAdmins(`📋 คำร้องลาใหม่\n${first} ${last} (${phone})\nประเภท: ${type}\nวันที่: ${fmtDate(sd)} ${st} - ${fmtDate(ed)} ${et}\nรวม ${r.days} วัน ${r.hours} ชม. ${r.minutes} นาที`);
+  await notifyAdmins(`📋 คำร้องลาใหม่\n${first} ${last} (${phone})\nประเภท: ${type}\nวันที่: ${fmtDate(sd)} ${st} - ${fmtDate(ed)} ${et}\nรวม ${r.days} วัน ${r.hours} ชม. ${r.minutes} นาที\n\nตรวจสอบ/อนุมัติที่: ${APP_URL}`);
   go('home');
 }
 
@@ -619,7 +620,7 @@ async function decideRequest(id, status){
   }).eq('id', id).select().single();
   if(error){ toast('อัปเดตไม่สำเร็จ'); return; }
   toast(`บันทึกผล: ${status}`);
-  notifyAdmins(`${status==='อนุมัติ'?'✅':'❌'} คำร้องลาของ ${data.first_name} ${data.last_name} ถูก${status}แล้ว`);
+  await notifyAdmins(`${status==='อนุมัติ'?'✅':'❌'} คำร้องลาของ ${data.first_name} ${data.last_name} ถูก${status}แล้ว`);
   await loadAdminData();
 }
 
